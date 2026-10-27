@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+._*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Runtime state the router writes (never belongs in the repo)
+state.json
+state.json.lock
+state.json.tmp
+decisions.log
+
+# Backups made by install.sh / settings_hook.py
+*.bak-*
+
+# Local secrets and packaging
+.env
+.env.*
+*.tar.gz
