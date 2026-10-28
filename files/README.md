@@ -20,6 +20,16 @@ The main session handles the message itself when:
 - the message looks like it contains a secret (API key, password, private key). It is not sent to Jev;
 - Jev is slow (over 1.5 s), fails, or the key is missing. Every error exits 0 with no output.
 
+## API key
+
+`router.py` reads `TYPESAFE_API_KEY` from the environment, then falls back to the macOS Keychain
+(service `TYPESAFE_API_KEY`). The Keychain path matters for the Claude desktop app, which launches
+hooks without the user's shell environment, so fish/zsh exports are not visible there. Store once:
+
+    security add-generic-password -U -a "$USER" -s TYPESAFE_API_KEY -w
+
+(`-w` with no value prompts for the key.) `jev router status` shows `last error` when both are missing.
+
 ## Limits
 
 Claude Code can't switch the main session's model per message. The main model still reads every

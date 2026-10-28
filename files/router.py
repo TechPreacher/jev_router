@@ -12,6 +12,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.request
@@ -119,10 +120,32 @@ def is_followup(prompt, has_history):
     return words <= 12 and bool(FOLLOWUP_REF.search(prompt))
 
 
-def ask_jev(prompt):
+KEYCHAIN_SERVICE = "TYPESAFE_API_KEY"
+
+
+def get_key():
+    """TYPESAFE_API_KEY from the environment, else from the macOS Keychain.
+
+    The desktop app launches hooks without the user's shell environment, so the env var set in
+    fish/zsh is absent there. Store once with:
+        security add-generic-password -U -a "$USER" -s TYPESAFE_API_KEY -w
+    """
     key = os.environ.get("TYPESAFE_API_KEY")
+    if key:
+        return key
+    try:
+        out = subprocess.run(["/usr/bin/security", "find-generic-password", "-w", "-s", KEYCHAIN_SERVICE],
+                             capture_output=True, text=True, timeout=1.0)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    key = out.stdout.strip() if out.returncode == 0 else ""
+    return key or None
+
+
+def ask_jev(prompt):
+    key = get_key()
     if not key:
-        raise RuntimeError("TYPESAFE_API_KEY not set")
+        raise RuntimeError("TYPESAFE_API_KEY not set (env or Keychain)")
     body = {"model": MODEL, "state": {"message": prompt[:MAX_CHARS]}, "questions": QUESTION}
     req = urllib.request.Request(URL, data=json.dumps(body).encode(), method="POST",
                                  headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
