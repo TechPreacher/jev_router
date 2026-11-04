@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Jev model router for Claude Code.
+"""Model router for Claude Code.
 
 Hook mode (UserPromptSubmit):  router.py hook   < hook JSON on stdin
 CLI mode:                      router.py on | off | status | reset | azure-token
 
 The hook must never block or slow a message: every failure path exits 0 with no output,
-and the Jev call has a hard timeout. Typing exactly "jev router on|off|status" in Claude
+and the sizing call has a hard timeout. Typing exactly "model router on|off|status" in Claude
 Code is handled by the hook itself (the message is not sent to the model).
 
 Backends: TypeSafe's hosted Jev (default, TYPESAFE_API_KEY) or a Microsoft Decision-1 deployment in
-Azure AI Foundry, used when JEV_AZURE_ENDPOINT and JEV_AZURE_DEPLOYMENT are set (environment or Keychain;
+Azure AI Foundry, used when MODEL_ROUTER_AZURE_ENDPOINT and MODEL_ROUTER_AZURE_DEPLOYMENT are set (environment or Keychain;
 both are treated as secrets). Azure auth is an Entra bearer token from `az account get-access-token`,
-cached next to state.json, or an api-key header when JEV_AZURE_API_KEY is set. The hook never waits for
+cached next to state.json, or an api-key header when MODEL_ROUTER_AZURE_API_KEY is set. The hook never waits for
 `az`: it uses the cached token and refreshes it in a detached background process.
 """
 import json
@@ -30,14 +30,15 @@ try:
 except ImportError:  # Windows: msvcrt byte-range locks stand in, see lock_file()
     fcntl = None
 
-HOME = os.environ.get("JEV_ROUTER_HOME", os.path.expanduser("~/.claude/jev-router"))
+HOME = (os.environ.get("MODEL_ROUTER_HOME") or os.environ.get("JEV_ROUTER_HOME")  # JEV_* names: pre-rename installs
+        or os.path.expanduser("~/.claude/model-router"))
 STATE = os.path.join(HOME, "state.json")
 LOG = os.path.join(HOME, "decisions.log")
 
 URL = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
 TIMEOUT_S = 1.5
-AZURE_SCOPE = "https://ai.azure.com/.default"  # override with JEV_AZURE_SCOPE
+AZURE_SCOPE = "https://ai.azure.com/.default"  # override with MODEL_ROUTER_AZURE_SCOPE
 AZURE_TOKEN_FILE = os.path.join(HOME, "azure-token.json")
 AZURE_REFRESH_S = 600  # refresh in the background when the cached token has less than this left
 AZURE_MIN_LEFT_S = 60  # a token this close to expiry is not used
@@ -45,14 +46,14 @@ AZURE_FETCH_TIMEOUT_S = 40  # az CLI, outside the hook only
 HOOK_MODE = False  # set by hook() and by the Copilot adapter: never wait for az, fail open instead
 USD_PER_INPUT_TOKEN = 0.042 / 1_000_000
 MIN_SURE = 0.60
-MAX_CHARS = 6000  # long pastes: size from the first part, keeps Jev fast
+MAX_CHARS = 6000  # long pastes: size from the first part, keeps sizing fast
 
 # size -> (helper agent, model it runs on), smallest to biggest
 SIZES = {
-    "tiny": ("jev-tiny", "Claude Haiku 5.5"),
-    "everyday": ("jev-everyday", "Claude Sonnet 5.5"),
-    "large": ("jev-large", "Claude Opus 5.5"),
-    "hardest": ("jev-hardest", "Claude Fable 5.1"),
+    "tiny": ("router-tiny", "Claude Haiku 5.5"),
+    "everyday": ("router-everyday", "Claude Sonnet 5.5"),
+    "large": ("router-large", "Claude Opus 5.5"),
+    "hardest": ("router-hardest", "Claude Fable 5.1"),
 }
 
 QUESTION = {
@@ -78,8 +79,26 @@ SECRETS = re.compile(
     r"(sk-[A-Za-z0-9_-]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bpassword\s*[:=]|\bapi[_ -]?key\s*[:=]|"
     r"\bgh[pousr]_[A-Za-z0-9]{20,})", re.I)
 
-EMPTY = {"enabled": False, "counts": {}, "jev_calls": 0, "input_tokens": 0, "errors": 0,
+EMPTY = {"enabled": False, "counts": {}, "sizing_calls": 0, "input_tokens": 0, "errors": 0,
          "last_error": None, "since": None}
+LEGACY_NAMES = {  # names before the model-router rename, still honoured for one release
+    "MODEL_ROUTER_AZURE_ENDPOINT": "JEV_AZURE_ENDPOINT", "MODEL_ROUTER_AZURE_DEPLOYMENT": "JEV_AZURE_DEPLOYMENT",
+    "MODEL_ROUTER_AZURE_API_KEY": "JEV_AZURE_API_KEY", "MODEL_ROUTER_AZURE_SCOPE": "JEV_AZURE_SCOPE",
+    "MODEL_ROUTER_AZURE_TOKEN": "JEV_AZURE_TOKEN", "MODEL_ROUTER_BACKEND": "JEV_BACKEND",
+    "MODEL_ROUTER_PRESIZED": "JEV_ROUTER_PRESIZED",
+}
+
+
+def setting(name):
+    """An environment value under its current name, else under its pre-rename name."""
+    return os.environ.get(name) or os.environ.get(LEGACY_NAMES.get(name, ""), "")
+
+
+def upgrade_state(state):
+    """state.json written before the rename counted Jev calls under another key."""
+    if "jev_calls" in state:
+        state["sizing_calls"] = state.get("sizing_calls", 0) or state.pop("jev_calls")
+    return state
 
 
 def lock_file(f):
@@ -99,7 +118,7 @@ def locked_state():
         lock_file(lock)
         try:
             with open(STATE) as f:
-                state = {**EMPTY, **json.load(f)}
+                state = upgrade_state({**EMPTY, **json.load(f)})
         except (OSError, ValueError):
             state = dict(EMPTY, counts={})
         yield state
@@ -112,7 +131,7 @@ def locked_state():
 def read_state():
     try:
         with open(STATE) as f:
-            return {**EMPTY, **json.load(f)}
+            return upgrade_state({**EMPTY, **json.load(f)})
     except (OSError, ValueError):
         return dict(EMPTY, counts={})
 
@@ -121,20 +140,20 @@ def backend_text():
     """One line naming the backend, never its endpoint or deployment (they are treated as secrets)."""
     kind, _ = backend()
     if kind == "azure":
-        return "Microsoft Decision-1 in Azure AI Foundry (JEV_AZURE_ENDPOINT / JEV_AZURE_DEPLOYMENT)"
+        return "Microsoft Decision-1 in Azure AI Foundry (MODEL_ROUTER_AZURE_ENDPOINT / MODEL_ROUTER_AZURE_DEPLOYMENT)"
     return f"TypeSafe Jev ({MODEL})"
 
 
 def status_text(s):
     cost = s["input_tokens"] * USD_PER_INPUT_TOKEN
     c = s.get("counts", {})
-    lines = [f"Jev router: {'ON' if s['enabled'] else 'OFF'}" + (f" (stats since {s['since']})" if s.get("since") else "")]
+    lines = [f"Model router: {'ON' if s['enabled'] else 'OFF'}" + (f" (stats since {s['since']})" if s.get("since") else "")]
     lines.append(f"  backend: {backend_text()}")
     for size, (agent, model) in SIZES.items():
-        lines.append(f"  {size:<9} -> {agent:<13} {model:<18} {c.get(size, 0)} msg")
+        lines.append(f"  {size:<9} -> {agent:<16} {model:<18} {c.get(size, 0)} msg")
     lines.append(f"  kept by main model: unsure {c.get('self_unsure', 0)}, short reply {c.get('self_followup', 0)}, "
-                 f"skipped (secret-looking) {c.get('skipped_private', 0)}, Jev error/slow {c.get('self_error', 0)}")
-    lines.append(f"  Jev: {s['jev_calls']} calls, {s['input_tokens']} input tokens, ${cost:.6f} total "
+                 f"skipped (secret-looking) {c.get('skipped_private', 0)}, sizing error/slow {c.get('self_error', 0)}")
+    lines.append(f"  sizing: {s['sizing_calls']} calls, {s['input_tokens']} input tokens, ${cost:.6f} total "
                  f"(at TypeSafe's list price; Azure bills the deployment)")
     if s.get("last_error"):
         lines.append(f"  last error: {s['last_error']}")
@@ -159,7 +178,7 @@ def is_followup(prompt, has_history):
 
 
 KEYCHAIN_SERVICE = "TYPESAFE_API_KEY"
-AZURE_NAMES = ("JEV_AZURE_ENDPOINT", "JEV_AZURE_DEPLOYMENT", "JEV_AZURE_API_KEY")
+AZURE_NAMES = ("MODEL_ROUTER_AZURE_ENDPOINT", "MODEL_ROUTER_AZURE_DEPLOYMENT", "MODEL_ROUTER_AZURE_API_KEY")
 
 
 def secret(name):
@@ -170,16 +189,21 @@ def secret(name):
         security add-generic-password -U -a "$USER" -s <NAME> -w
     (On Windows the Copilot adapter loads the same names from the Credential Manager first.)
     """
-    value = os.environ.get(name)
+    value = setting(name)
     if value:
         return value
-    try:
-        out = subprocess.run(["/usr/bin/security", "find-generic-password", "-w", "-s", name],
-                             capture_output=True, text=True, timeout=1.0)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    value = out.stdout.strip() if out.returncode == 0 else ""
-    return value or None
+    for service in (name, LEGACY_NAMES.get(name)):
+        if not service:
+            continue
+        try:
+            out = subprocess.run(["/usr/bin/security", "find-generic-password", "-w", "-s", service],
+                                 capture_output=True, text=True, timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        value = out.stdout.strip() if out.returncode == 0 else ""
+        if value:
+            return value
+    return None
 
 
 def get_key():
@@ -198,12 +222,12 @@ def azure_url(endpoint):
 
 
 def backend():
-    """("azure", {"url", "deployment"}) when JEV_AZURE_ENDPOINT and JEV_AZURE_DEPLOYMENT are set, else
-    ("typesafe", None). JEV_BACKEND=typesafe forces TypeSafe even when the Azure values exist."""
-    if os.environ.get("JEV_BACKEND", "").lower() == "typesafe":
+    """("azure", {"url", "deployment"}) when MODEL_ROUTER_AZURE_ENDPOINT and MODEL_ROUTER_AZURE_DEPLOYMENT are set, else
+    ("typesafe", None). MODEL_ROUTER_BACKEND=typesafe forces TypeSafe even when the Azure values exist."""
+    if setting("MODEL_ROUTER_BACKEND").lower() == "typesafe":
         return "typesafe", None
-    endpoint = secret("JEV_AZURE_ENDPOINT")
-    deployment = secret("JEV_AZURE_DEPLOYMENT") if endpoint else None
+    endpoint = secret("MODEL_ROUTER_AZURE_ENDPOINT")
+    deployment = secret("MODEL_ROUTER_AZURE_DEPLOYMENT") if endpoint else None
     if endpoint and deployment:
         return "azure", {"url": azure_url(endpoint), "deployment": deployment}
     return "typesafe", None
@@ -242,8 +266,8 @@ def fetch_azure_token():
     """Run `az account get-access-token` (blocking), cache the token, return it. Raises on failure."""
     az = shutil.which("az")
     if not az:
-        raise RuntimeError("az CLI not found on PATH (needed for the Azure token; or set JEV_AZURE_API_KEY)")
-    scope = os.environ.get("JEV_AZURE_SCOPE") or AZURE_SCOPE
+        raise RuntimeError("az CLI not found on PATH (needed for the Azure token; or set MODEL_ROUTER_AZURE_API_KEY)")
+    scope = setting("MODEL_ROUTER_AZURE_SCOPE") or AZURE_SCOPE
     try:
         out = subprocess.run([az, "account", "get-access-token", "--scope", scope, "-o", "json"],
                              capture_output=True, text=True, timeout=AZURE_FETCH_TIMEOUT_S)
@@ -300,16 +324,16 @@ def azure_token():
 
 
 def azure_auth():
-    """The auth header for the Azure call: api-key when JEV_AZURE_API_KEY is set, else a bearer token
-    (JEV_AZURE_TOKEN in the environment, else the az CLI cache)."""
-    api_key = secret("JEV_AZURE_API_KEY")
+    """The auth header for the Azure call: api-key when MODEL_ROUTER_AZURE_API_KEY is set, else a bearer token
+    (MODEL_ROUTER_AZURE_TOKEN in the environment, else the az CLI cache)."""
+    api_key = secret("MODEL_ROUTER_AZURE_API_KEY")
     if api_key:
         return {"api-key": api_key}
-    token = os.environ.get("JEV_AZURE_TOKEN") or azure_token()
+    token = setting("MODEL_ROUTER_AZURE_TOKEN") or azure_token()
     return {"Authorization": f"Bearer {token}"}
 
 
-def ask_jev(prompt):
+def ask_backend(prompt):
     kind, azure = backend()
     if kind == "azure":
         url, model, headers = azure["url"], azure["deployment"], azure_auth()
@@ -337,7 +361,7 @@ def decide(prompt, has_history):
     if is_followup(prompt, has_history):
         return "self_followup", {}
     try:
-        size, p, conf, tokens, ms, kind = ask_jev(prompt)
+        size, p, conf, tokens, ms, kind = ask_backend(prompt)
     except Exception as e:  # slow, offline, bad key, schema change: carry on as if absent
         return "self_error", {"error": f"{type(e).__name__}: {e}"[:200]}
     info = {"size": size, "p": p, "confidence": conf, "tokens": tokens, "ms": ms, "backend": kind}
@@ -348,7 +372,7 @@ def record(route, info, prompt):
     with locked_state() as s:
         s["counts"][route] = s["counts"].get(route, 0) + 1
         if "tokens" in info:
-            s["jev_calls"] += 1
+            s["sizing_calls"] += 1
             s["input_tokens"] += info["tokens"]
         if "error" in info:
             s["errors"] += 1
@@ -365,7 +389,11 @@ def hook():
     prompt = (payload.get("prompt") or "").strip()
 
     cmd = prompt.lower().rstrip(".!")
-    if cmd in ("jev router on", "jev router off", "jev router status"):
+    for prefix in ("model router ", "router ", "jev router "):  # the last one: the name before the rename
+        if cmd.startswith(prefix):
+            cmd = "model router " + cmd[len(prefix):]
+            break
+    if cmd in ("model router on", "model router off", "model router status"):
         text = status_text(read_state()) if cmd.endswith("status") else set_enabled(cmd.endswith("on"))
         print(json.dumps({"decision": "block", "reason": text}))
         return
@@ -381,13 +409,13 @@ def hook():
         return
 
     agent, model = SIZES[route]
-    ctx = (f"[jev-router] Jev sized this message as {route.upper()} (p={info['p']:.2f}). "
+    ctx = (f"[model-router] Sized as {route.upper()} (p={info['p']:.2f}). "
            f"Delegate the job to the `{agent}` subagent (Agent tool, subagent_type \"{agent}\", runs on {model}). "
            f"Give it a self-contained prompt: the user's message plus any conversation context it needs. "
            f"Relay its result to the user as-is, keeping its final 'Done by' line. Don't redo the work yourself. "
            f"If the subagent is unavailable or fails, do the job yourself and say the router fell back.")
     print(json.dumps({
-        "systemMessage": f"Jev → {route} ({info['p']:.0%}) → {agent}",
+        "systemMessage": f"Router → {route} ({info['p']:.0%}) → {agent}",
         "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx},
     }))
 
@@ -402,7 +430,7 @@ def main():
         sys.exit(0)
     if arg in ("on", "off"):
         print(set_enabled(arg == "on"))
-        if arg == "on" and backend()[0] == "azure" and not secret("JEV_AZURE_API_KEY"):
+        if arg == "on" and backend()[0] == "azure" and not secret("MODEL_ROUTER_AZURE_API_KEY"):
             try:  # warm the token cache so the first routed message does not go through unrouted
                 azure_token()
             except Exception as e:

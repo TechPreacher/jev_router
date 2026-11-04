@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add or remove the Jev router UserPromptSubmit hook in ~/.claude/settings.json.
+"""Add or remove the Model router UserPromptSubmit hook in ~/.claude/settings.json.
 
 Usage: settings_hook.py add|remove [settings.json path]
 Keeps every other setting and hook. Writes a timestamped backup before changing anything.
@@ -11,18 +11,20 @@ import shutil
 import sys
 import time
 
-MARKER = "jev-router/router.py"
+MARKER = "model-router/router.py"
+OLD_MARKER = "jev-router/router.py"  # the hook entry written before the rename; removed on add
 HOOK = {
     "hooks": [{
         "type": "command",
-        "command": 'python3 -I "$HOME/.claude/jev-router/router.py" hook',
+        "command": 'python3 -I "$HOME/.claude/model-router/router.py" hook',
         "timeout": 3,
     }]
 }
 
 
 def is_router_entry(entry):
-    return any(MARKER in h.get("command", "") for h in entry.get("hooks", []))
+    return any(MARKER in h.get("command", "") or OLD_MARKER in h.get("command", "")
+               for h in entry.get("hooks", []))
 
 
 def main():

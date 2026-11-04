@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve the Jev model router.
+Thanks for helping improve the Model router.
 
 ## Ground rules
 
@@ -24,7 +24,7 @@ Thanks for helping improve the Jev model router.
    ```
 3. Try the hook by hand with the router pointed at a scratch directory:
    ```bash
-   export JEV_ROUTER_HOME=/tmp/jev-test
+   export MODEL_ROUTER_HOME=/tmp/router-test
    python3 -I files/router.py on
    echo '{"prompt":"rename foo to bar"}' | python3 -I files/router.py hook
    python3 -I files/router.py status
@@ -34,6 +34,6 @@ Thanks for helping improve the Jev model router.
 ## Reporting issues
 
 Use GitHub issues. Include your OS and Claude Code versions, the output of
-`python3 ~/.claude/jev-router/router.py status`, and the relevant lines from
-`~/.claude/jev-router/decisions.log` (they contain no message text). Never paste your
+`python3 ~/.claude/model-router/router.py status`, and the relevant lines from
+`~/.claude/model-router/decisions.log` (they contain no message text). Never paste your
 `TYPESAFE_API_KEY`.
