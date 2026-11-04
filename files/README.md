@@ -20,15 +20,39 @@ The main session handles the message itself when:
 - the message looks like it contains a secret (API key, password, private key). It is not sent to Jev;
 - Jev is slow (over 1.5 s), fails, or the key is missing. Every error exits 0 with no output.
 
-## API key
+## Backend and credentials
 
-`router.py` reads `TYPESAFE_API_KEY` from the environment, then falls back to the macOS Keychain
-(service `TYPESAFE_API_KEY`). The Keychain path matters for the Claude desktop app, which launches
-hooks without the user's shell environment, so fish/zsh exports are not visible there. Store once:
+Two backends answer the sizing question with the same request and response shape:
+
+- **TypeSafe Jev** (default): `https://api.typesafe.ai`, model `jev-latest`, authenticated with
+  `TYPESAFE_API_KEY`.
+- **Microsoft Decision-1 in Azure AI Foundry**: used as soon as `JEV_AZURE_ENDPOINT` (the Foundry
+  resource endpoint, with or without `/providers/microsoft`) and `JEV_AZURE_DEPLOYMENT` (the deployment
+  name) are set. Requests go to `<endpoint>/providers/microsoft/v1/systemone` with `model` = deployment.
+  Authentication is a Microsoft Entra bearer token from `az account get-access-token --scope
+  https://ai.azure.com/.default` (change the scope with `JEV_AZURE_SCOPE`), or an `api-key` header when
+  `JEV_AZURE_API_KEY` is set. `JEV_BACKEND=typesafe` forces TypeSafe even when the Azure values exist.
+
+Every one of these values is read from the environment first, then from the macOS Keychain item with
+that service name. The Keychain path matters for the Claude desktop app, which launches hooks without
+the user's shell environment, so fish/zsh exports are not visible there. Store each once:
 
     security add-generic-password -U -a "$USER" -s TYPESAFE_API_KEY -w
+    security add-generic-password -U -a "$USER" -s JEV_AZURE_ENDPOINT -w
+    security add-generic-password -U -a "$USER" -s JEV_AZURE_DEPLOYMENT -w
 
-(`-w` with no value prompts for the key.) `jev router status` shows `last error` when both are missing.
+(`-w` with no value prompts for the value.) The endpoint and deployment name are treated as secrets:
+`status` names the backend but never prints them.
+
+The hook has 3 seconds and `az` needs about 2.5, so the hook never calls `az`. It uses a token cached in
+`~/.claude/jev-router/azure-token.json` (owner-only file) and, when that is missing or has under ten
+minutes left, starts `router.py azure-token` as a detached background process and lets the current
+message through unrouted (`status` then shows `last error: ... Azure token not cached yet`). The next
+message routes. `router.py on` fetches the token right away, so turning the router on from a shell
+avoids that first miss; `router.py azure-token` refreshes it by hand. Tokens last about an hour, so a
+long session refreshes itself a few times without you noticing.
+
+`jev router status` shows `last error` when the active backend's credentials are missing.
 
 ## Limits
 

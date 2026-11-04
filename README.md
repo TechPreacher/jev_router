@@ -8,8 +8,10 @@ See [`files/README.md`](files/README.md) for how it works and its limits.
 
 - macOS or Linux with Claude Code and access to the haiku, sonnet, opus and fable models
 - `python3` (standard library only, no packages to install)
-- A [TypeSafe](https://typesafe.ai) API key exported as `TYPESAFE_API_KEY` in your shell profile.
-  The installer never copies or stores the key.
+- A [TypeSafe](https://typesafe.ai) API key exported as `TYPESAFE_API_KEY` in your shell profile,
+  or a Microsoft Decision-1 deployment in Azure AI Foundry (set `JEV_AZURE_ENDPOINT` and
+  `JEV_AZURE_DEPLOYMENT`; sign in with `az login`). The installer never copies or stores any of them.
+  See [`files/README.md`](files/README.md#backend-and-credentials).
 
 ## Install
 
@@ -40,8 +42,9 @@ This removes the hook, the four helpers and `~/.claude/jev-router/`, including i
 
 ## Privacy
 
-When ON, message text is sent to api.typesafe.ai to be sized. Slash commands, `!` commands, short
-replies and secret-looking text are kept local. Details in [SECURITY.md](SECURITY.md).
+When ON, message text is sent to api.typesafe.ai, or to your own Azure AI Foundry deployment when
+one is configured, to be sized. Slash commands, `!` commands, short replies and secret-looking text
+are kept local. Details in [SECURITY.md](SECURITY.md).
 
 ## Contributing
 

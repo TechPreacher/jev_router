@@ -30,11 +30,12 @@ fi
 
 echo
 echo "Done. Router is $(python3 -I "$CLAUDE/jev-router/router.py" status | head -1 | sed 's/Jev router: //')."
-if [ -z "${TYPESAFE_API_KEY:-}" ]; then
+if [ -z "${TYPESAFE_API_KEY:-}" ] && { [ -z "${JEV_AZURE_ENDPOINT:-}" ] || [ -z "${JEV_AZURE_DEPLOYMENT:-}" ]; }; then
   cat <<'EOF'
 
-NOTE: TYPESAFE_API_KEY is not set in this shell. The router needs it, or it will silently do
-nothing. Export it in your shell profile (for example ~/.zshrc or ~/.bashrc), outside any file you share:
+NOTE: neither TYPESAFE_API_KEY nor an Azure backend (JEV_AZURE_ENDPOINT + JEV_AZURE_DEPLOYMENT) is set in
+this shell. The router needs one, or it will silently do nothing. Export it in your shell profile (for
+example ~/.zshrc or ~/.bashrc) or store it in the Keychain (see files/README.md), outside any file you share:
     export TYPESAFE_API_KEY=...
 EOF
 fi
